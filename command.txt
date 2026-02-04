@@ -1,0 +1,216 @@
+创建虚拟环境
+python -m venv .venv
+
+激活python环境 
+powershell
+.venv\Scripts\Activate.ps1
+
+cmd
+.venv\Scripts\activate.bat
+
+安装requirements.txt
+pip install -r requirements.txt
+
+安装torch（在cpu上跑的时候）
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+pip install natsort
+
+
+demo测试
+python demo.py --use_cpu --path "demo_video\real\094.mp4" --folder_original_path "frame\094" --folder_optical_flow_path "optical_result\094" -mop "checkpoints\optical.pth" -mor "checkpoints\original.pth"
+
+python demo.py --use_cpu --path "demo_video\fake_sora\snow-dogs.mp4" --folder_original_path "frame\snow-dogs" --folder_optical_flow_path "optical_result\snow-dogs" -mop "checkpoints\optical.pth" -mor "checkpoints\original.pth"
+
+python demo.py --use_cpu --path "demo_video\fake_sora\snow-dogs.mp4" --folder_original_path "frame\snow-dogs" --folder_optical_flow_path "optical_result\snow-dogs" -mop "checkpoints\optical.pth" -mor "checkpoints\original.pth"
+
+train RGB
+
+train RGB
+python train.py --gpus 0 --exp_name TRAIN_RGB_BRANCH datasets moonvalley_vos2_original_crop datasets_test moonvalley_vos2_original_crop
+
+train optical
+python train.py --gpus 0 --exp_name TRAIN_OF_BRANCH datasets moonvalley_vos2_crop_op datasets_test moonvalley_vos2_crop_op
+
+test 
+python test.py -fop "data/test/hotshot" -mop "checkpoints/optical.pth" -for "data/test/original/hotshot" -mor "checkpoints/original.pth" -e "data/results/T2V/hotshot.csv" -ef "data/results/frame/T2V/hotshot.csv" -t 0.5
+
+train freqNet RGB
+python train.py --gpus 0 --exp_name TRAIN_OF_BRANCH datasets moonvalley_vos2_crop_op datasets_test moonvalley_vos2_crop_op
+
+train freqNet optical
+python train.py --gpus 0 --exp_name TRAIN_OF_FREQNET datasets moonvalley_vos2_crop_op datasets_test moonvalley_vos2_crop_op arch freqnet batch_size 32 lr 0.02 nepoch 100
+
+test 
+python test.py -fop "data/test/hotshot" -mop "checkpoints/optical.pth" -for "data/test/original/hotshot" -mor "checkpoints/original.pth" -e "data/results/T2V/hotshot.csv" -ef "data/results/frame/T2V/hotshot.csv" -t 0.5 --arch freqnet
+
+安装gpu环境
+1.安装Miniconda
+安装时勾选 “Add to PATH” 
+2.创建并激活虚拟环境
+
+powershell初始化
+
+conda init powershell
+
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2
+
+conda create -n aigvdet python=3.9 -y
+conda activate aigvdet
+3.安装项目依赖
+在项目根目录（g:\论文\源码\AIGVDet-main）执行：
+（首先激活conda环境）用anaconda prompt
+conda activate aigvdet
+pip install -r requirements.txt
+pip install natsort
+$CONDA_PREFIX
+4.安装 GPU 版 PyTorch（CUDA 11.7）
+pip install torch==2.0.0 torchvision==0.15.1 torchaudio==2.0.1 --index-url https://download.pytorch.org/whl/cu117
+
+conda install -c nvidia/label/cuda-11.7.1 cuda
+验证安装
+nvcc --version
+
+export CUDA_HOME=$CONDA_PREFIX
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+
+5.验证 GPU 是否可用
+nvidia-smi
+python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
+如果输出 True，说明 GPU 环境 OK。
+
+NumPy 2.x 与当前 PyTorch 不兼容
+pip install -U "numpy==1.26.4"
+
+开启conda环境
+conda activate aigvdet
+
+退出环境
+conda deactivate
+
+删除虚拟环境
+rmdir /s /q D:\miniconda\envs\aigvdet
+
+
+
+
+
+
+
+安装ffmpeg （将视频拆解为帧） 试了一下需要安装在base环境
+conda install -c conda-forge ffmpeg
+
+
+（安装失败了）强制改编码，需要删除整个环境，修改编码后再次安装依赖
+conda activate aigvdet
+chcp 65001
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+set LANG=en_US.UTF-8
+set LC_ALL=en_US.UTF-8
+
+conda install -c conda-forge gdk-pixbuf -y
+
+安装后验证
+ffmpeg -version
+ffmpeg -hwaccels
+
+新脚本处理视频(视频需要做好标签（0_real / 1_fake）)：
+# 单个视频
+python preprocess_video.py --input "demo_video/real/094.mp4" --frames_root "frame" --flow_root "optical_result" --raft_model "raft_model/raft-things.pth"
+
+# 批量（目录）
+python preprocess_video.py --input "demo_video" --recursive --frames_root "frame" --flow_root "optical_result"
+
+
+conda 缓存目录改到 D 盘
+conda config --set pkgs_dirs D:\hejulian\conda_pkgs
+
+
+设置临时缓存
+mkdir D:\hejulian\tmp
+mkdir D:\hejulian\pip_cache
+
+set TEMP=D:\hejulian\tmp
+set TMP=D:\hejulian\tmp
+set PIP_CACHE_DIR=D:\hejulian\pip_cache
+
+
+视频预处理
+python preprocess_video.py --path "demo_video" ^
+  -for "data/train/trainset_1" -fop "data/train/trainset_1_op" ^
+  --model "raft_model/raft-things.pth" ^
+  --ffmpeg_path "D:\anaconda\Library\bin\ffmpeg.exe" ^
+  --recursive
+  --mixed_precision
+  --small 
+  --alternate_corr # 这一句不要
+
+python preprocess_video.py --path "demo_video" -for "data/train/trainset_1" -fop "data/train/trainset_1_op" --model "raft_model/raft-things.pth" --ffmpeg_path "D:\anaconda\Library\bin\ffmpeg.exe" --recursive --mixed_precision --small --alternate_corr
+
+
+预处理自己的数据集
+完整模型：
+python preprocess_video.py --path "hjldata" -for "data/train/trainset_1" -fop "data/train/trainset_1_op" --model "raft_model/raft-things.pth" --ffmpeg_path "D:\anaconda\Library\bin\ffmpeg.exe" --recursive --mixed_precision
+
+小模型：
+python preprocess_video.py --path "hjldata" -for "data/train/trainset_1" -fop "data/train/trainset_1_op" --model "raft_model/raft-small.pth" --ffmpeg_path "D:\anaconda\Library\bin\ffmpeg.exe" --recursive --mixed_precision --small
+
+自己的demo
+python hjldemo.py --path "D:\coding\doing\AIGVDet-main\hjldata\1_fake\19700121_1924_6971fd0e0cb48191868b37bd7c3c4ea1.mp4" --folder_original_path "D:\coding\doing\AIGVDet-main\data\train\trainset_1\1_fake\19700121_1924_6971fd0e0cb48191868b37bd7c3c4ea1" --folder_optical_flow_path "D:\coding\doing\AIGVDet-main\data\train\trainset_1_op\1_fake\19700121_1924_6971fd0e0cb48191868b37bd7c3c4ea1" --model_optical_flow_path "checkpoints/optical.pth" --model_original_path "checkpoints/original.pth"
+
+
+$env:PYTHONPATH = "$PWD\core"
+
+训练
+python train.py --gpus 0 --exp_name hjl_test datasets trainset_1 datasets_test trainset_1
+
+训练修改后
+python train.py --gpus 0 --exp_name hjl_test num_workers 0 datasets trainset_1 datasets_test trainset_1
+
+上边的爆显存了，改了batch_size
+python train.py --gpus 0 --exp_name hjl_test batch_size 16 num_workers 0 datasets trainset_1 datasets_test trainset_1
+
+
+
+激活conda环境
+source /opt/conda/bin/activate
+
+启动自己的环境
+conda activate hejulian
+
+进入项目
+cd data/hejulian/AIGVDet-main
+
+进入conda所在目录
+cd /opt/conda/envs/hejulian
+
+在linux上的视频预处理(光流大模型)
+python preprocess_video.py --path "demo_video" \
+  -for "data/train/trainset_1" -fop "data/train/trainset_1_op" \
+  --model "raft_model/raft-things.pth" \
+  --ffmpeg_path "/opt/conda/envs/hejulian/bin/ffmpeg" \
+  --recursive \
+  --mixed_precision
+
+在linux上的视频预处理(光流小模型)
+python preprocess_video.py --path "demo_video" \
+  -for "data/train/trainset_1" -fop "data/train/trainset_1_op" \
+  --model "raft_model/raft-small.pth" \
+  --ffmpeg_path "/opt/conda/envs/hejulian/bin/ffmpeg" \
+  --recursive \
+  --mixed_precision \
+  --small
+
+nvidia-smi
+
+$env:PYTHONPATH = "E:\hejulian\code;E:\hejulian\code\core"
+
+
+
+
+
+

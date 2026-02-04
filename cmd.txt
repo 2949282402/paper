@@ -1,0 +1,935 @@
+# ============================================================
+# 视频Deepfake检测项目 - 完整命令格式与参数说明
+# ============================================================
+# 注意：PowerShell 使用反引号 ` 作为换行符，需要放在行尾
+# Windows CMD 使用 ` 作为换行符
+# 或者将整个命令写在一行
+
+# ============================================================
+# 1. 数据预处理（提取帧 + 光流）
+# ============================================================
+#
+# 预处理策略：保留所有帧，帧采样在训练时动态进行
+# - 预处理：保留视频全部帧和光流图
+# - 训练时：DataLoader 随机采样 num_frames 帧（每个 epoch 可采样不同帧）
+# - 优点：灵活性高，一次预处理可用于不同 num_frames 实验
+#
+# ============================================================
+
+python preprocess_video.py `
+    --path video_dir `
+    --folder_original_path frame_output `
+    --folder_optical_flow_path optical_output `
+    --model raft_model/raft-things.pth `
+    --ffmpeg_path ffmpeg `
+    --hwaccel cuda `
+    --exts ".mp4,.avi,.mov" `
+    --recursive `
+    --label 0_real `
+    --preserve_structure `
+    --start_number 0 `
+    --use_cpu `
+    --small `
+    --mixed_precision
+
+# 参数说明：
+# --path                     : 输入视频文件或目录路径
+#                              示例: "video/test.mp4" 或 "video_folder/"
+#
+# --folder_original_path     : RGB帧输出根目录
+#                              输出格式: {output_root}/{label}/{video_name}/00000.jpg
+#                              示例: "data/train"
+#
+# --folder_optical_flow_path : 光流图输出根目录
+#                              输出格式: {output_root}/{label}/{video_name}/00000.jpg
+#                              示例: "data/optical/train"
+#
+# --model                    : RAFT光流模型权重路径
+#                              默认: "raft_model/raft-things.pth"
+#
+# --ffmpeg_path              : ffmpeg可执行文件路径
+#                              默认: "ffmpeg" (需在PATH中)
+#                              示例: "D:\\miniconda\\Library\\bin\\ffmpeg.exe"
+#
+# --hwaccel                  : ffmpeg硬件加速方式
+#                              默认: "cuda" (使用GPU解码)
+#                              设为空字符串"": 禁用硬件加速
+#
+# --exts                     : 视频文件扩展名，逗号分隔
+#                              默认: ".mp4,.avi,.mov,.mkv,.webm,.mpg,.mpeg"
+#
+# --recursive                : 递归搜索子目录中的视频
+#                              默认: False (不递归)
+#
+# --label                    : 当输入目录无0_real/1_fake子文件夹时使用的默认标签
+#                              默认: "0_real"
+#                              可选: "0_real", "1_fake"
+#
+# --preserve_structure       : 保留输入目录的子文件夹结构到输出
+#                              默认: False
+#
+# --start_number             : 提取帧的起始编号
+#                              默认: 0 (输出00000.jpg开始)
+#
+# --use_cpu                  : 强制使用CPU计算光流
+#                              默认: False (使用GPU)
+#
+# --small                    : 使用小型RAFT模型 (更快但精度略低)
+#                              默认: False
+#
+# --mixed_precision          : 使用混合精度计算 (节省显存)
+#                              默认: False
+
+
+# ============================================================
+# 2. 训练命令
+# ============================================================
+
+# ------------------------------
+# 模式一：视频级 Late Fusion + 门控融合（推荐）
+# RGB和光流各自用Transformer时序聚合，再用门控机制融合
+# ------------------------------
+
+python train.py `
+    --exp_name my_experiment `
+    --gpus 0 `
+    --dual_branch True `
+    --video_level True `
+    --early_fusion False `
+    --arch_rgb freqnet `
+    --arch_optical resnet50 `
+    --fusion_type gated `
+    --feature_dim 256 `
+    --num_frames 16 `
+    --num_heads 8 `
+    --num_layers 2 `
+    --batch_size 4 `
+    --lr 0.0001 `
+    --nepoch 100 `
+    --dataset_root core/data `
+    --optical_root core/data `
+    --datasets moonvalley_vos2_original_crop `
+    --datasets_optical moonvalley_vos2_crop_op `
+    --datasets_test moonvalley_vos2_original_crop `
+    --datasets_optical_test moonvalley_vos2_crop_op `
+    --pretrained True `
+    --warmup True `
+    --warmup_epoch 3 `
+    --earlystop True `
+    --earlystop_epoch 5 `
+    --optim adam `
+    --beta1 0.9 `
+    --seed 3407 `
+    --num_workers 4 `
+    --save_epoch_freq 20 `
+    --save_latest_freq 2000
+
+# 参数说明：
+# --exp_name                 : 实验名称，用于保存模型和日志的目录名
+#                              模型保存位置: data/exp/{exp_name}/ckpt/
+#                              日志保存位置: data/exp/{exp_name}/logs.txt
+#
+# --gpus                     : 使用的GPU编号列表
+#                              默认: [0]
+#                              多GPU示例: --gpus 0 1 2 3
+#
+# video_level                : 是否启用视频级时序建模
+#                              True: 使用Transformer聚合多帧
+#                              False: 帧级别独立分类
+#
+# early_fusion               : 融合时机选择
+#                              True: Early Fusion - 先融合后时序聚合
+#                              False: Late Fusion - 分别时序聚合后融合 (推荐)
+#
+# arch_rgb                   : RGB分支网络架构
+#                              可选: "freqnet" (频域网络,224x224)
+#                                    "resnet18", "resnet34", "resnet50" (残差网络,448x448)
+#                              推荐: "freqnet" (对GAN生成伪影敏感)
+#
+# arch_optical               : 光流分支网络架构
+#                              可选: "resnet18", "resnet34", "resnet50", "freqnet"
+#                              推荐: "resnet50" (有ImageNet预训练)
+#
+# fusion_type                : 特征融合策略
+#                              "concat": 拼接 [256+256=512] -> FC (简单有效)
+#                              "add": 逐元素相加 (参数少)
+#                              "bilinear": 双线性池化 (捕捉交互)
+#                              "attention": 跨模态注意力 (自适应)
+#                              "gated": 门控融合 (推荐,自适应权重,可解释性强)
+#
+# feature_dim                : 每个分支输出的特征维度
+#                              默认: 256
+#
+# fused_dim                  : Early Fusion后的融合特征维度
+#                              默认: 512
+#                              仅在early_fusion=True时有效
+#
+# num_frames                 : 每个视频采样的帧数
+#                              默认: 16
+#                              训练时: 从全部帧中随机连续采样 (增加数据多样性)
+#                              测试时: 从中间位置采样 (确定性)
+#                              采样逻辑: RGB[i] 配对 flow[i]，保证1:1对应
+#
+# num_heads                  : Transformer注意力头数
+#                              默认: 8
+#                              要求: fused_dim能被num_heads整除
+#
+# num_layers                 : Transformer编码器层数
+#                              默认: 2
+#                              更多层: 更强表达能力但更慢
+#
+# batch_size                 : 批大小
+#                              视频级建议: 2-8 (显存限制)
+#                              帧级建议: 32-64
+#
+# lr                         : 学习率
+#                              默认: 0.0001
+#
+# nepoch                     : 总训练轮数
+#                              默认: 400
+#
+# dataset_root               : 数据集根目录 (RGB帧)
+#                              结构: {dataset_root}/train/0_real/, 1_fake/
+#                                    {dataset_root}/val/0_real/, 1_fake/
+#
+# optical_root               : 光流图根目录
+#                              结构: {optical_root}/train/0_real/, 1_fake/
+#                                    {optical_root}/val/0_real/, 1_fake/
+#
+# pretrained                 : 是否使用ImageNet预训练权重
+#                              默认: True
+#                              仅对ResNet有效,FreqNet无预训练
+#
+# warmup                     : 是否使用学习率预热
+#                              默认: False
+#                              True: 前warmup_epoch轮线性增加学习率
+#
+# warmup_epoch               : 预热轮数
+#                              默认: 3
+#
+# earlystop                  : 是否启用早停
+#                              默认: True
+#                              连续earlystop_epoch轮无提升则降低学习率或停止
+#
+# earlystop_epoch            : 早停耐心值
+#                              默认: 5
+#
+# optim                      : 优化器类型
+#                              可选: "adam", "sgd"
+#                              默认: "adam"
+#
+# beta1                      : Adam优化器的beta1参数
+#                              默认: 0.9
+#
+# seed                       : 随机种子
+#                              默认: 3407
+#
+# num_workers                : 数据加载线程数
+#                              默认: 20
+#                              Windows建议: 0-4
+#
+# save_epoch_freq            : 每隔多少epoch保存一次模型
+#                              默认: 20
+#
+# save_latest_freq           : 每隔多少step保存latest模型
+#                              默认: 2000
+
+
+# ------------------------------
+# 模式二：视频级 Early Fusion
+# 先融合RGB和光流特征，再用Transformer时序聚合
+# ------------------------------
+
+python train.py `
+    --exp_name early_fusion_exp `
+    --gpus 0 `
+    --dual_branch True `
+    --video_level True `
+    --early_fusion True `
+    --arch_rgb freqnet `
+    --arch_optical resnet50 `
+    --fusion_type concat `
+    --feature_dim 256 `
+    --fused_dim 512 `
+    --num_frames 16 `
+    --num_heads 8 `
+    --num_layers 2 `
+    --batch_size 4
+
+# 参数说明：
+# early_fusion True          : 使用Early Fusion架构
+#                              帧级融合: RGB[T,256] + Optical[T,256] -> [T,512]
+#                              时序聚合: [T,512] -> Transformer -> [B,512]
+#                              最后分类: [B,512] -> MLP -> logit
+#
+# fused_dim 512              : Early Fusion后的特征维度
+#
+# 其他参数同模式一
+
+
+# ------------------------------
+# 模式三：帧级双分支（无Transformer）
+# 每帧融合RGB和光流，输出帧级概率
+# ------------------------------
+
+python train.py `
+    --exp_name dual_branch_exp `
+    --gpus 0 `
+    --dual_branch True `
+    --video_level False `
+    --arch_rgb freqnet `
+    --arch_optical resnet50 `
+    --fusion_type attention `
+    --feature_dim 256 `
+    --batch_size 32
+
+# 参数说明：
+# dual_branch True           : 启用帧级双分支模式
+#                              每帧独立: RGB + 光流 -> 融合 -> 分类
+#
+# video_level False          : 不使用Transformer时序聚合
+#                              视频级概率 = 所有帧概率的平均
+#
+# batch_size 32              : 帧级模式可用更大batch
+
+
+# ------------------------------
+# 模式四：单分支
+# 仅使用RGB或光流单一模态
+# ------------------------------
+
+python train.py `
+    --exp_name single_exp `
+    --gpus 0 `
+    --dual_branch False `
+    --video_level False `
+    --arch freqnet `
+    --batch_size 64
+
+# 参数说明：
+# dual_branch False          : 禁用双分支
+#
+# video_level False          : 禁用时序建模
+#
+# arch                       : 单分支网络架构
+#                              可选: "freqnet", "resnet18", "resnet34", "resnet50"
+
+
+# ============================================================
+# 3. 测试命令（帧级双分支）
+# ============================================================
+
+python test.py `
+    --folder_original_path data/test/frame `
+    --folder_optical_flow_path data/test/optical `
+    --model_original_path checkpoints/rgb_model.pth `
+    --model_optical_flow_path checkpoints/optical_model.pth `
+    --arch_rgb freqnet `
+    --arch_optical resnet50 `
+    --threshold 0.5 `
+    --excel_path results/video_results.csv `
+    --excel_frame_path results/frame_results.csv `
+    --aug_norm True `
+    --use_cpu
+
+# 参数说明：
+# --folder_original_path     : RGB帧测试目录
+#                              结构: {path}/0_real/{video_name}/*.jpg
+#                                    {path}/1_fake/{video_name}/*.jpg
+#
+# --folder_optical_flow_path : 光流图测试目录
+#                              结构: 同上
+#
+# --model_original_path      : RGB分支模型权重路径
+#                              示例: "data/exp/my_exp/ckpt/model_epoch_latest.pth"
+#
+# --model_optical_flow_path  : 光流分支模型权重路径
+#
+# --arch_rgb                 : RGB分支网络架构
+#                              必须与训练时一致
+#                              默认: "freqnet"
+#
+# --arch_optical             : 光流分支网络架构
+#                              必须与训练时一致
+#                              默认: "resnet50"
+#
+# --threshold                : 分类阈值
+#                              默认: 0.5
+#                              > threshold -> Fake
+#                              <= threshold -> Real
+#
+# --excel_path               : 视频级检测结果CSV保存路径
+#                              包含: video_name, probability, label
+#
+# --excel_frame_path         : 帧级检测结果CSV保存路径
+#                              包含: frame_path, rgb_prob, optical_prob, label
+#
+# --aug_norm                 : 是否对输入图像归一化
+#                              默认: True
+#                              使用ImageNet均值和标准差
+#
+# --use_cpu                  : 强制使用CPU推理
+#                              默认: False (使用GPU)
+
+
+# ============================================================
+# 4. 数据增强参数（训练时可选）
+# ============================================================
+
+python train.py `
+    --exp_name aug_exp `
+    --gpus 0 `
+    --blur_prob 0.1 `
+    --jpg_prob 0.1 `
+    --aug_crop True `
+    --aug_flip True `
+    --aug_norm True
+
+# 参数说明：
+# blur_prob                  : 高斯模糊概率
+#                              默认: 0.1 (10%概率应用模糊)
+#
+# blur_sig                   : 模糊sigma值
+#                              默认: 0.5
+#                              值越大模糊越强
+#
+# jpg_prob                   : JPEG压缩概率
+#                              默认: 0.1
+#                              模拟真实场景的压缩损失
+#
+# jpg_method                 : JPEG压缩方法
+#                              可选: "cv2", "pil"
+#                              默认: "cv2"
+#
+# jpg_qual                   : JPEG压缩质量
+#                              默认: 75
+#                              范围: 1-100, 值越小压缩越强
+#
+# gray_prob                  : 灰度化概率
+#                              默认: 0.0 (不使用)
+#
+# aug_resize                 : 是否随机缩放
+#                              默认: True
+#
+# aug_crop                   : 是否随机裁剪
+#                              默认: True
+#
+# aug_flip                   : 是否随机水平翻转
+#                              默认: True
+#
+# aug_norm                   : 是否归一化
+#                              默认: True
+#                              使用ImageNet均值[0.485,0.456,0.406]
+#                              和标准差[0.229,0.224,0.225]
+#
+# loadSize                   : 图像加载尺寸
+#                              默认: 256
+#                              图像先resize到此尺寸
+#
+# cropSize                   : 图像裁剪尺寸
+#                              默认: 224
+#                              从loadSize中裁剪cropSize
+
+
+# ============================================================
+# 5. 继续训练与加载模型
+# ============================================================
+
+python train.py `
+    --exp_name my_experiment `
+    --gpus 0 `
+    --ckpt model_epoch_50.pth `
+    --continue_train True `
+    --epoch_count 51 `
+    --last_epoch 50
+
+# 参数说明：
+# --ckpt                     : 要加载的checkpoint文件名
+#                              默认: "model_epoch_latest.pth"
+#                              文件位置: data/exp/{exp_name}/ckpt/{ckpt}
+#
+# continue_train             : 是否继续训练
+#                              默认: False
+#                              True: 加载优化器状态继续训练
+#
+# epoch_count                : 起始epoch计数
+#                              默认: 1
+#                              继续训练时设为上次epoch+1
+#
+# last_epoch                 : 上次训练的epoch
+#                              默认: -1
+#                              用于学习率调度器恢复
+
+
+# ============================================================
+# 6. 数据目录结构
+# ============================================================
+
+# 预处理后的目录结构 (保留全部帧):
+#
+# data/
+# ├── train/                          # 训练集RGB帧
+# │   ├── 0_real/                     # 真实视频 (标签0)
+# │   │   └── video_001/              # 视频名称
+# │   │       ├── 00000.jpg           # 第0帧
+# │   │       ├── 00001.jpg           # 第1帧
+# │   │       ├── ...
+# │   │       └── 00099.jpg           # 共N帧 (视频全部帧)
+# │   └── 1_fake/                     # 伪造视频 (标签1)
+# │       └── video_002/
+# │           └── ...
+# │
+# ├── val/                            # 验证集RGB帧 (结构同train)
+# │   ├── 0_real/
+# │   └── 1_fake/
+# │
+# ├── optical/                        # 光流图目录 (optical_root)
+# │   ├── train/
+# │   │   ├── 0_real/
+# │   │   │   └── video_001/
+# │   │   │       ├── 00000.jpg       # flow[0]: RGB[0]->RGB[1]的光流
+# │   │   │       ├── 00001.jpg       # flow[1]: RGB[1]->RGB[2]的光流
+# │   │   │       ├── ...
+# │   │   │       └── 00098.jpg       # 共N-1张 (比RGB少1张)
+# │   │   └── 1_fake/
+# │   └── val/
+# │       ├── 0_real/
+# │       └── 1_fake/
+# │
+# └── exp/                            # 实验输出目录
+#     └── my_experiment/              # exp_name
+#         ├── ckpt/                   # 模型权重
+#         │   ├── model_epoch_latest.pth
+#         │   ├── model_epoch_20.pth
+#         │   └── model_epoch_40.pth
+#         ├── train/                  # TensorBoard训练日志
+#         ├── val/                    # TensorBoard验证日志
+#         └── logs.txt                # 文本日志
+#
+# RGB-光流对应关系:
+#   RGB: 00000.jpg ~ 0000{N-1}.jpg  (N帧)
+#   光流: 00000.jpg ~ 0000{N-2}.jpg (N-1帧)
+#   flow[i] = RGB[i] -> RGB[i+1] 的运动
+#
+# 训练时采样:
+#   DataLoader从[0, N-2]中随机选择连续T个索引
+#   使用相同索引采样RGB和光流: RGB[i] 配对 flow[i]
+#   结果: T帧RGB + T帧光流 (1:1对应)
+
+
+# ============================================================
+# 7. 网络架构说明
+# ============================================================
+
+# ==================== FreqNet vs ResNet ====================
+#
+# FreqNet (频域网络):
+#   - 输入尺寸: 224x224
+#   - 无预训练权重
+#   - 特点: 提取频域特征，对GAN生成图像的频谱异常敏感
+#   - 原理: 将图像转换到频域，分析高频成分
+#   - 推荐用于: RGB分支 (检测生成伪影)
+#
+# ResNet50 (残差网络):
+#   - 输入尺寸: 448x448
+#   - 有ImageNet预训练权重
+#   - 特点: 提取空间特征，迁移学习效果好
+#   - 推荐用于: 光流分支 (分析运动模式)
+
+# ==================== 融合策略详解 ====================
+#
+# concat (拼接) - 默认推荐:
+#   - 公式: fused = FC([RGB; Optical])
+#   - 输入: 256 + 256 = 512
+#   - 优点: 简单有效，保留全部信息
+#   - 缺点: 参数较多
+#
+# add (相加):
+#   - 公式: fused = FC(RGB + Optical)
+#   - 输入: 256
+#   - 优点: 参数少，计算快
+#   - 缺点: 可能丢失模态特定信息
+#
+# bilinear (双线性):
+#   - 公式: fused = Bilinear(RGB, Optical)
+#   - 优点: 捕捉特征间的二阶交互
+#   - 缺点: 计算量大，容易过拟合
+#
+# attention (跨模态注意力):
+#   - 公式: attended_rgb = attn(RGB, Optical) * Optical
+#           attended_opt = attn(Optical, RGB) * RGB
+#           fused = FC([attended_rgb; attended_opt])
+#   - 优点: 自适应学习跨模态关系，捕捉不一致性
+#   - 缺点: 参数较多
+#
+# gated (门控) - 推荐用于Late Fusion:
+#   - 公式: concat = [RGB; Optical]
+#           gate_r = Sigmoid(FC_r(concat))
+#           gate_o = Sigmoid(FC_o(concat))
+#           normalize: gate_r/sum, gate_o/sum
+#           fused = gate_r*RGB + gate_o*Optical
+#   - 优点: 自适应权重，可解释性强，端到端学习
+#   - 应用: 视频级融合时自动平衡两个分支的重要性
+
+
+# ============================================================
+# 8. 检测流程图
+# ============================================================
+
+# Late Fusion + 门控融合架构 (推荐):
+#
+# ┌─────────────────────────────────────────────────────────────────┐
+# │  RGB视频输入 [Batch, 16帧, 3通道, 224, 224]                     │
+# │      ↓                                                           │
+# │  FreqNet (逐帧特征提取)                                          │
+# │      ↓                                                           │
+# │  RGB帧特征 [B, 16, 256]                                          │
+# │      ↓                                                           │
+# │  Temporal Transformer A                                          │
+# │  ┌──────────────────────┐                                        │
+# │  │ CLS token [B,1,256]  │                                        │
+# │  │ + 位置编码           │                                        │
+# │  │ + 自注意力 (8头×2层) │                                        │
+# │  └──────────────────────┘                                        │
+# │      ↓                                                           │
+# │  RGB视频向量 [B, 256] ───────────┐                              │
+# └──────────────────────────────────┼──────────────────────────────┘
+#                                    ↓
+#                           ┌────────────────────┐
+#                           │   门控融合模块      │
+#                           ├────────────────────┤
+#                           │ concat = [rgb; opt] [B, 512]          │
+#                           │ α_rgb = σ(W_r·concat)    [B, 1]       │
+#                           │ α_opt = σ(W_o·concat)    [B, 1]       │
+#                           │ normalize: α_r/Σ, α_o/Σ              │
+#                           │ fused = α_r·rgb + α_o·opt [B, 256]    │
+#                           └────────────────────┘
+#                                    ↓
+#                           融合视频特征 [B, 256]
+#                                    ↓
+#                           分类器 (MLP)
+#                           ┌────────────────┐
+#                           │ Linear 256→128 │
+#                           │ ReLU + Dropout │
+#                           │ Linear 128→1   │
+#                           └────────────────┘
+#                                    ↓
+#                           logits [B, 1]
+#                                    ↓
+#                           Sigmoid → 概率 p
+#                                    ↓
+#                           p > 0.5 → Fake
+#                           p ≤ 0.5 → Real
+#                                    ↑
+# ┌──────────────────────────────────┼──────────────────────────────┐
+# │  光流视频向量 [B, 256] ──────────┘                              │
+# │      ↑                                                           │
+# │  Temporal Transformer B                                          │
+# │  ┌──────────────────────┐                                        │
+# │  │ CLS token [B,1,256]  │                                        │
+# │  │ + 位置编码           │                                        │
+# │  │ + 自注意力 (8头×2层) │                                        │
+# │  └──────────────────────┘                                        │
+# │      ↑                                                           │
+# │  光流帧特征 [B, 16, 256]                                         │
+# │      ↑                                                           │
+# │  ResNet50 (逐帧特征提取)                                         │
+# │      ↑                                                           │
+# │  光流视频输入 [Batch, 16帧, 3通道, 448, 448]                    │
+# └─────────────────────────────────────────────────────────────────┘
+
+
+# ============================================================
+# 9. 常用命令示例
+# ============================================================
+
+# 示例1: 快速测试 (验证代码能否运行)
+python train.py `
+    --exp_name quick_test `
+    --gpus 0 `
+    --dual_branch True `
+    --video_level True `
+    --early_fusion False `
+    --fusion_type gated `
+    --batch_size 2 `
+    --nepoch 2 `
+    --num_frames 8 `
+    --save_epoch_freq 1 `
+    --dataset_root core/data `
+    --optical_root core/data `
+    --datasets moonvalley_vos2_original_crop `
+    --datasets_optical moonvalley_vos2_crop_op `
+    --datasets_test moonvalley_vos2_original_crop `
+    --datasets_optical_test moonvalley_vos2_crop_op
+
+# 示例2: 完整训练 (推荐配置 - Late Fusion + 门控)
+python train.py `
+    --exp_name late_fusion_full_train `
+    --gpus 0 `
+    --dual_branch True `
+    --video_level True `
+    --early_fusion False `
+    --arch_rgb freqnet `
+    --arch_optical resnet50 `
+    --fusion_type gated `
+    --feature_dim 256 `
+    --num_frames 16 `
+    --num_heads 8 `
+    --num_layers 2 `
+    --batch_size 4 `
+    --lr 0.00002 `
+    --nepoch 100 `
+    --warmup True `
+    --warmup_epoch 3 `
+    --earlystop True `
+    --earlystop_epoch 10 `
+    --dataset_root core/data `
+    --optical_root core/data `
+    --datasets moonvalley_vos2_original_crop `
+    --datasets_optical moonvalley_vos2_crop_op `
+    --datasets_test moonvalley_vos2_original_crop `
+    --datasets_optical_test moonvalley_vos2_crop_op
+
+# 示例3: 多GPU训练
+python train.py `
+    --exp_name multi_gpu `
+    --gpus 0 1 2 3 `
+    --dual_branch True `
+    --video_level True `
+    --early_fusion False `
+    --fusion_type gated `
+    --batch_size 16
+
+# 示例4: 使用SGD优化器
+python train.py `
+    --exp_name sgd_train `
+    --gpus 0 `
+    --dual_branch True `
+    --video_level True `
+    --early_fusion False `
+    --fusion_type gated `
+    --optim sgd `
+    --lr 0.01 `
+    --batch_size 4
+
+# 示例5: 预处理完整流程
+# Step 1: 预处理视频 (保留全部帧)
+python preprocess_video.py `
+    --path raw_videos `
+    --folder_original_path data/train `
+    --folder_optical_flow_path data/optical/train
+
+# Step 2: 训练模型 (动态采样16帧，Late Fusion + 门控)
+python train.py `
+    --exp_name my_model `
+    --gpus 0 `
+    --dual_branch True `
+    --video_level True `
+    --early_fusion False `
+    --fusion_type gated `
+    --num_frames 16 `
+    --dataset_root data `
+    --optical_root data/optical `
+    --datasets my_dataset `
+    --datasets_optical my_dataset_optical
+
+# Step 3: 测试模型
+python test.py `
+    --folder_original_path data/test `
+    --folder_optical_flow_path data/optical/test `
+    --model_original_path data/exp/my_model/ckpt/model_epoch_latest.pth `
+    --model_optical_flow_path data/exp/my_model/ckpt/model_epoch_latest.pth `
+    --excel_path results/test_results.csv
+
+继续训练
+python train.py `
+    --exp_name late_fusion_full_train `
+    --continue_train True `
+    --epoch best `
+    --nepoch 150 `
+    # ... 其他参数保持不变 ...
+
+python train.py `
+    --exp_name late_fusion_full_train_2 `
+    --continue_train True `
+    --epoch latest `
+    --gpus 0 `
+    --dual_branch True `
+    --video_level True `
+    --early_fusion False `
+    --arch_rgb freqnet `
+    --arch_optical resnet50 `
+    --fusion_type gated `
+    --feature_dim 256 `
+    --num_frames 16 `
+    --num_heads 8 `
+    --num_layers 2 `
+    --batch_size 4 `
+    --lr 0.00002 `
+    --nepoch 400 `
+    --warmup True `
+    --warmup_epoch 3 `
+    --earlystop True `
+    --earlystop_epoch 10 `
+    --dataset_root core/data `
+    --optical_root core/data `
+    --datasets moonvalley_vos2_original_crop `
+    --datasets_optical moonvalley_vos2_crop_op `
+    --datasets_test moonvalley_vos2_original_crop `
+    --datasets_optical_test moonvalley_vos2_crop_op
+
+python train.py `
+    --exp_name late_fusion_full_train_3 `
+    --gpus 0 `
+    --dual_branch True `
+    --video_level True `
+    --early_fusion False `
+    --arch_rgb freqnet `
+    --arch_optical resnet50 `
+    --fusion_type gated `
+    --feature_dim 256 `
+    --num_frames 16 `
+    --num_heads 8 `
+    --num_layers 2 `
+    --batch_size 4 `
+    --lr 0.0001 `
+    --nepoch 400 `
+    --warmup True `
+    --warmup_epoch 3 `
+    --earlystop True `
+    --earlystop_epoch 10 `
+    --dataset_root core/data `
+    --optical_root core/data `
+    --datasets moonvalley_vos2_original_crop `
+    --datasets_optical moonvalley_vos2_crop_op `
+    --datasets_test moonvalley_vos2_original_crop `
+    --datasets_optical_test moonvalley_vos2_crop_op    
+
+测试命令
+    python hjl_test.py `
+    --model_path "core/data/exp/late_fusion_full_train/ckpt/model_epoch_120.pth" `
+    --test_video_path "path/to/test_videos" `
+    --dual_branch True `
+    --video_level True `
+    --early_fusion False `
+    --arch_rgb freqnet `
+    --arch_optical resnet50 `
+    --fusion_type gated `
+    --feature_dim 256 `
+    --num_frames 16 `
+    --num_heads 8 `
+    --num_layers 2
+
+
+测试预处理
+python preprocess_video.py `
+    --path E:\hejulian\code\core\data\test `
+    --folder_original_path data/test/rgb `
+    --folder_optical_flow_path data/test/flow `
+    --recursive `
+    --preserve_structure
+
+python preprocess_video.py --path E:\hejulian\code\core\data\test `
+  --folder_original_path data/test/rgb `
+  --folder_optical_flow_path data/test/flow `
+  --model raft_model/raft-things.pth `
+  --ffmpeg_path C:\Users\silud\anaconda3\Library\bin\ffmpeg.exe `
+  --recursive `
+  --mixed_precision `
+  --preserve_structure `
+  --shard 0 --num_shards 4
+    
+python preprocess_video.py --path E:\hejulian\code\core\data\test `
+  --folder_original_path data/test/rgb `
+  --folder_optical_flow_path data/test/flow `
+  --model raft_model/raft-things.pth `
+  --ffmpeg_path C:\Users\silud\anaconda3\Library\bin\ffmpeg.exe `
+  --recursive `
+  --mixed_precision `
+  --preserve_structure `
+  --shard 1 --num_shards 4
+
+python preprocess_video.py --path E:\hejulian\code\core\data\test `
+  --folder_original_path data/test/rgb `
+  --folder_optical_flow_path data/test/flow `
+  --model raft_model/raft-things.pth `
+  --ffmpeg_path C:\Users\silud\anaconda3\Library\bin\ffmpeg.exe `
+  --recursive `
+  --mixed_precision `
+  --preserve_structure `
+  --shard 2 --num_shards 4
+
+python preprocess_video.py --path E:\hejulian\code\core\data\test `
+  --folder_original_path data/test/rgb `
+  --folder_optical_flow_path data/test/flow `
+  --model raft_model/raft-things.pth `
+  --ffmpeg_path C:\Users\silud\anaconda3\Library\bin\ffmpeg.exe `
+  --recursive `
+  --mixed_precision `
+  --preserve_structure `
+  --shard 3 --num_shards 4
+
+
+新数据集预处理
+python preprocess_video.py --path E:\hejulian\code\DFDC `
+  --folder_original_path new_data/test/rgb `
+  --folder_optical_flow_path new_data/test/flow `
+  --model raft_model/raft-things.pth `
+  --ffmpeg_path C:\Users\silud\anaconda3\Library\bin\ffmpeg.exe `
+  --recursive `
+  --mixed_precision `
+  --preserve_structure `
+  --shard 0 --num_shards 2
+
+python preprocess_video.py --path E:\hejulian\code\DFDC `
+  --folder_original_path new_data/test/rgb `
+  --folder_optical_flow_path new_data/test/flow `
+  --model raft_model/raft-things.pth `
+  --ffmpeg_path C:\Users\silud\anaconda3\Library\bin\ffmpeg.exe `
+  --recursive `
+  --mixed_precision `
+  --preserve_structure `
+  --shard 1 --num_shards 2
+
+测试命令
+python hjl_test.py `
+--model_path "E:\hejulian\code\core\data\exp\late_fusion_full_train_3\ckpt\model_epoch_best.pth" `
+--test_video_path "E:\hejulian\code\data\test" `
+--fake_only True `
+--dual_branch False `
+--video_level True `
+--early_fusion False `
+--arch_rgb freqnet `
+--arch_optical resnet50 `
+--fusion_type gated `
+--feature_dim 256 `
+--num_frames 16 `
+--num_heads 8 `
+--num_layers 2 `
+--gpus 0 `
+--require_cuda true `
+--batch_size 10 `
+--num_workers 3 `
+--threshold 0.5
+
+
+val test_results
+python hjl_test.py `
+--model_path "E:\hejulian\code\core\data\exp\late_fusion_full_train_3\ckpt\model_epoch_best.pth" `
+--test_video_path "E:\hejulian\code\core\data\val" `
+--fake_only False `
+--dual_branch False `
+--video_level True `
+--early_fusion False `
+--arch_rgb freqnet `
+--arch_optical resnet50 `
+--fusion_type gated `
+--feature_dim 256 `
+--num_frames 16 `
+--num_heads 8 `
+--num_layers 2 `
+--gpus 0 `
+--require_cuda true `
+--batch_size 10 `
+--num_workers 3 `
+--threshold 0.5

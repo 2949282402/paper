@@ -1,0 +1,15 @@
+# conda create -n aigvdet python=3.9
+# conda install -c nvidia/label/cuda-11.7.1 cuda-toolkit
+
+einops
+imageio
+ipympl
+matplotlib
+numpy
+opencv-python
+pandas
+scikit-learn
+tensorboard
+tensorboardX
+tqdm
+blobfile>=1.0.5
